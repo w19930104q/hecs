@@ -51,6 +51,158 @@ impl<T: Component> ChangeTracker<T> {
             removed: false,
         }
     }
+
+    #[test]
+    fn removed_after_component_removal() {
+        let mut world = World::new();
+
+        let a = world.spawn((42, true));
+        let b = world.spawn((17, false));
+
+        let mut tracker = ChangeTracker::<i32>::new();
+
+        // First track: establish baseline
+        {
+            let mut changes = tracker.track(&mut world);
+            assert_eq!(changes.added().count(), 2);
+        }
+
+        // Remove T from entity a
+        world.remove_one::<i32>(a).unwrap();
+
+        // Second track: should report a as removed
+        {
+            let mut changes = tracker.track(&mut world);
+            let removed: Vec<_> = changes.removed().collect();
+            assert_eq!(removed.len(), 1, "entity a should be reported as removed");
+            assert_eq!(removed[0].0, a);
+            assert_eq!(removed[0].1, 42);
+            assert_eq!(changes.changed().count(), 0);
+            assert_eq!(changes.added().count(), 0);
+        }
+    }
+
+    #[test]
+    fn added_after_insert_on_existing_entity() {
+        let mut world = World::new();
+
+        let a = world.spawn((true,));
+
+        let mut tracker = ChangeTracker::<i32>::new();
+
+        // First track: no i32 components exist yet
+        {
+            let mut changes = tracker.track(&mut world);
+            assert_eq!(changes.added().count(), 0);
+        }
+
+        // Insert i32 into entity a (moves it from {bool} to {bool, i32})
+        world.insert_one(a, 42).unwrap();
+
+        // Second track: should report a as added
+        {
+            let mut changes = tracker.track(&mut world);
+            let added: Vec<_> = changes.added().collect();
+            assert_eq!(added.len(), 1, "entity a should be reported as added");
+            assert_eq!(added[0].0, a);
+            assert_eq!(*added[0].1, 42);
+        }
+    }
+
+    #[test]
+    fn change_detection_across_archetype_migration() {
+        // Entity has T and is tracked. Then a different component is added,
+        // causing the entity to move archetypes. T should still be tracked correctly.
+        let mut world = World::new();
+
+        let a = world.spawn((42,));
+
+        let mut tracker = ChangeTracker::<i32>::new();
+
+        // First track: establish baseline
+        {
+            let mut changes = tracker.track(&mut world);
+            assert_eq!(changes.added().count(), 1);
+        }
+
+        // Modify T
+        *world.get::<&mut i32>(a).unwrap() = 99;
+
+        // Add a different component, causing archetype migration
+        world.insert_one(a, true).unwrap();
+
+        // Second track: should detect the change in T
+        {
+            let mut changes = tracker.track(&mut world);
+            let changed: Vec<_> = changes.changed().collect();
+            assert_eq!(changed.len(), 1, "entity a should be reported as changed");
+            assert_eq!(changed[0].0, a);
+            assert_eq!(changed[0].1, 42); // old value
+            assert_eq!(*changed[0].2, 99); // new value
+        }
+    }
+
+    #[test]
+    fn same_slot_respawn() {
+        // When an entity is despawned and a new one spawns in the same slot,
+        // the change tracker should not carry over state from the old entity.
+        let mut world = World::new();
+
+        let a = world.spawn((42,));
+        let a_id = a.id();
+        let a_gen = a.generation;
+
+        let mut tracker = ChangeTracker::<i32>::new();
+
+        // Establish baseline
+        {
+            let mut changes = tracker.track(&mut world);
+            assert_eq!(changes.added().count(), 1);
+        }
+
+        // Despawn and respawn in same slot
+        world.despawn(a).unwrap();
+        let b = world.spawn((100,));
+        assert_eq!(b.id(), a_id);
+        assert_ne!(b.generation, a_gen);
+
+        // Track: should see b as added with 100, NOT as changed from 42
+        {
+            let mut changes = tracker.track(&mut world);
+            let added: Vec<_> = changes.added().collect();
+            assert_eq!(added.len(), 1);
+            assert_eq!(added[0].0, b);
+            assert_eq!(*added[0].1, 100);
+            assert_eq!(changes.changed().count(), 0);
+            assert_eq!(changes.removed().count(), 0);
+        }
+    }
+
+    #[test]
+    fn re_read_same_window_is_empty() {
+        // After consuming all changes, re-reading should produce empty results.
+        let mut world = World::new();
+
+        let a = world.spawn((42,));
+
+        let mut tracker = ChangeTracker::<i32>::new();
+
+        // First track
+        {
+            let mut changes = tracker.track(&mut world);
+            assert_eq!(changes.added().count(), 1);
+            assert_eq!(changes.changed().count(), 0);
+            assert_eq!(changes.removed().count(), 0);
+        }
+
+        // Re-read without any world changes
+        {
+            let mut changes = tracker.track(&mut world);
+            assert_eq!(changes.added().count(), 0);
+            assert_eq!(changes.changed().count(), 0);
+            assert_eq!(changes.removed().count(), 0);
+        }
+    }
 }
 
 impl<T: Component> Default for ChangeTracker<T> {
@@ -228,6 +380,158 @@ mod tests {
             assert_eq!(changes.removed().collect::<Vec<_>>(), []);
             assert_eq!(changes.changed().collect::<Vec<_>>(), []);
             assert_eq!(changes.added().collect::<Vec<_>>(), []);
+        }
+    }
+
+    #[test]
+    fn removed_after_component_removal() {
+        let mut world = World::new();
+
+        let a = world.spawn((42, true));
+        let b = world.spawn((17, false));
+
+        let mut tracker = ChangeTracker::<i32>::new();
+
+        // First track: establish baseline
+        {
+            let mut changes = tracker.track(&mut world);
+            assert_eq!(changes.added().count(), 2);
+        }
+
+        // Remove T from entity a
+        world.remove_one::<i32>(a).unwrap();
+
+        // Second track: should report a as removed
+        {
+            let mut changes = tracker.track(&mut world);
+            let removed: Vec<_> = changes.removed().collect();
+            assert_eq!(removed.len(), 1, "entity a should be reported as removed");
+            assert_eq!(removed[0].0, a);
+            assert_eq!(removed[0].1, 42);
+            assert_eq!(changes.changed().count(), 0);
+            assert_eq!(changes.added().count(), 0);
+        }
+    }
+
+    #[test]
+    fn added_after_insert_on_existing_entity() {
+        let mut world = World::new();
+
+        let a = world.spawn((true,));
+
+        let mut tracker = ChangeTracker::<i32>::new();
+
+        // First track: no i32 components exist yet
+        {
+            let mut changes = tracker.track(&mut world);
+            assert_eq!(changes.added().count(), 0);
+        }
+
+        // Insert i32 into entity a (moves it from {bool} to {bool, i32})
+        world.insert_one(a, 42).unwrap();
+
+        // Second track: should report a as added
+        {
+            let mut changes = tracker.track(&mut world);
+            let added: Vec<_> = changes.added().collect();
+            assert_eq!(added.len(), 1, "entity a should be reported as added");
+            assert_eq!(added[0].0, a);
+            assert_eq!(*added[0].1, 42);
+        }
+    }
+
+    #[test]
+    fn change_detection_across_archetype_migration() {
+        // Entity has T and is tracked. Then a different component is added,
+        // causing the entity to move archetypes. T should still be tracked correctly.
+        let mut world = World::new();
+
+        let a = world.spawn((42,));
+
+        let mut tracker = ChangeTracker::<i32>::new();
+
+        // First track: establish baseline
+        {
+            let mut changes = tracker.track(&mut world);
+            assert_eq!(changes.added().count(), 1);
+        }
+
+        // Modify T
+        *world.get::<&mut i32>(a).unwrap() = 99;
+
+        // Add a different component, causing archetype migration
+        world.insert_one(a, true).unwrap();
+
+        // Second track: should detect the change in T
+        {
+            let mut changes = tracker.track(&mut world);
+            let changed: Vec<_> = changes.changed().collect();
+            assert_eq!(changed.len(), 1, "entity a should be reported as changed");
+            assert_eq!(changed[0].0, a);
+            assert_eq!(changed[0].1, 42); // old value
+            assert_eq!(*changed[0].2, 99); // new value
+        }
+    }
+
+    #[test]
+    fn same_slot_respawn() {
+        // When an entity is despawned and a new one spawns in the same slot,
+        // the change tracker should not carry over state from the old entity.
+        let mut world = World::new();
+
+        let a = world.spawn((42,));
+        let a_id = a.id();
+        let a_gen = a.generation;
+
+        let mut tracker = ChangeTracker::<i32>::new();
+
+        // Establish baseline
+        {
+            let mut changes = tracker.track(&mut world);
+            assert_eq!(changes.added().count(), 1);
+        }
+
+        // Despawn and respawn in same slot
+        world.despawn(a).unwrap();
+        let b = world.spawn((100,));
+        assert_eq!(b.id(), a_id);
+        assert_ne!(b.generation, a_gen);
+
+        // Track: should see b as added with 100, NOT as changed from 42
+        {
+            let mut changes = tracker.track(&mut world);
+            let added: Vec<_> = changes.added().collect();
+            assert_eq!(added.len(), 1);
+            assert_eq!(added[0].0, b);
+            assert_eq!(*added[0].1, 100);
+            assert_eq!(changes.changed().count(), 0);
+            assert_eq!(changes.removed().count(), 0);
+        }
+    }
+
+    #[test]
+    fn re_read_same_window_is_empty() {
+        // After consuming all changes, re-reading should produce empty results.
+        let mut world = World::new();
+
+        let a = world.spawn((42,));
+
+        let mut tracker = ChangeTracker::<i32>::new();
+
+        // First track
+        {
+            let mut changes = tracker.track(&mut world);
+            assert_eq!(changes.added().count(), 1);
+            assert_eq!(changes.changed().count(), 0);
+            assert_eq!(changes.removed().count(), 0);
+        }
+
+        // Re-read without any world changes
+        {
+            let mut changes = tracker.track(&mut world);
+            assert_eq!(changes.added().count(), 0);
+            assert_eq!(changes.changed().count(), 0);
+            assert_eq!(changes.removed().count(), 0);
         }
     }
 }
